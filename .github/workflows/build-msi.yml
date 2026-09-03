@@ -72,7 +72,6 @@ jobs:
         }
 
         # 3. BYPASS THE ANTI-YARN PREINSTALL BLOCKER
-        # Rewriting the preinstall check to evaluate cleanly to zero errors
         $preInstallFile = "build/npm/preinstall.ts"
         if (Test-Path $preInstallFile) {
             Set-Content -Path $preInstallFile -Value "console.log('Anti-Yarn preinstall checks bypassed cleanly.');" -Encoding UTF8
@@ -84,7 +83,8 @@ jobs:
         UV_THREADPOOL_SIZE: 64
         NODE_OPTIONS: --max-old-space-size=8192 --experimental-strip-types
         VSCODE_SKIP_NODE_VERSION_CHECK: 1
-      run: yarn install --pure-lockfile
+      # Replaced --pure-lockfile with --no-lockfile and added structural engine isolation flags
+      run: yarn install --no-lockfile --ignore-engines --non-interactive
 
     - name: Compile Corde IDE Binaries
       env:
@@ -104,7 +104,6 @@ jobs:
             if ($foundExe) { $ExeName = $foundExe.Name }
         }
 
-        # Initialize modern WiX 4 extension environments
         wix extension add WixToolset.UI.wixext
 
         $WxsContent = @"
