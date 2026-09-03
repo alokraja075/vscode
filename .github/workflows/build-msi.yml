@@ -3,7 +3,7 @@ name: Build Corde IDE MSI
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # Allows you to trigger the build manually anytime
+  workflow_dispatch: 
 
 jobs:
   build-windows:
@@ -13,26 +13,60 @@ jobs:
     - name: Checkout Code Source
       uses: actions/checkout@v4
       with:
-        fetch-depth: 1 # Instant shallow clone
+        fetch-depth: 1
 
     - name: Setup Node.js (v22)
       uses: actions/setup-node@v4
       with:
         node-version: 22
-        cache: 'npm' # Automatically activates lightning-fast cloud caching
+        cache: 'npm'
 
-    - name: Configure Turbo Compilation Speeds
+    - name: Configure Turbo Compilation Env Settings
       run: |
         echo "UV_THREADPOOL_SIZE=64" >> $env:GITHUB_ENV
         echo "NODE_OPTIONS=--max-old-space-size=8192 --experimental-strip-types" >> $env:GITHUB_ENV
         echo "VSCODE_SKIP_NODE_VERSION_CHECK=1" >> $env:GITHUB_ENV
 
-    - name: Inline WiX Toolset Provisioning
+    - name: Set Up Branded Identity and Patches
+      run: |
+        # 1. Update product.json properties securely
+        $prod = Get-Content "product.json" -Raw | ConvertFrom-Json
+        $prod.nameShort = "CordeIDE"
+        $prod.nameLong = "Corde IDE"
+        $prod.applicationName = "corde-ide"
+        $prod.dataFolderName = ".corde-ide"
+        $prod.win32MutexName = "cordeide"
+        $prod.win32RegValueName = "CordeIDE"
+        $prod.win32AppId = "{C00DE1DE-E5F6-7A8B-9C0D-1E2F3A4B5C6D}"
+        $prod.win32AppUserModelId = "Corde.IDE"
+        $prod.win32DirName = "Corde IDE"
+        $prod.quality = "stable"
+        
+        $galleryObj = [PSCustomObject]@{
+            serviceUrl = "https://visualstudio.com"
+            cacheUrl   = "https://windows.net"
+            itemUrl    = "https://visualstudio.com"
+        }
+        $prod.extensionsGallery = $galleryObj
+        $prod | ConvertTo-Json -Depth 100 | Set-Content "product.json" -Encoding UTF8
+
+        # 2. Patch Node v22 execution configurations
+        $extFile = "build/lib/extensions.ts"
+        if (Test-Path $extFile) {
+            $extContent = Get-Content -Path $extFile -Raw
+            if ($extContent -match "execArgv:\s*\[\]") {
+                $extContent = $extContent -replace "execArgv:\s*\[\]", 'execArgv: ["--experimental-strip-types"]'
+                Set-Content -Path $extFile -Value $extContent -NoNewline -Encoding UTF8
+            }
+        }
+
+    - name: Inline WiX Toolset Provisioning (FIXED)
       run: |
         $WixBinDir = "$pwd\.wix\bin"
         if (-not (Test-Path "$WixBinDir\candle.exe")) {
           New-Item -ItemType Directory -Force -Path "$WixBinDir" | Out-Null
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          # Fixed complete absolute link destination mapping
           curl.exe -L -o "$pwd\.wix\wix311.zip" "https://github.com"
           Expand-Archive -Path "$pwd\.wix\wix311.zip" -DestinationPath "$WixBinDir" -Force
           Remove-Item "$pwd\.wix\wix311.zip" -Force
@@ -48,11 +82,18 @@ jobs:
     - name: Generate Layout Manifest & Build MSI Installer
       run: |
         $SourceBinaries = Join-Path (Get-Item .).Parent.FullName "VSCode-win32-x64"
+        if (-not (Test-Path $SourceBinaries)) { throw "Compilation payload folder missing at $SourceBinaries" }
         
-        # 1. Harvest file layout maps
+        # Determine active executable targets dynamically
+        $ExeName = "Code.exe"
+        if (-not (Test-Path "$SourceBinaries\Code.exe")) {
+            $foundExe = Get-ChildItem -Path $SourceBinaries -Filter "*.exe" | Where-Object { $_.Name -notmatch "inno" } | Select-Object -First 1
+            if ($foundExe) { $ExeName = $foundExe.Name }
+        }
+
+        # Harvest and compile 
         heat dir "$SourceBinaries" -cg CordeFiles -dr INSTALLFOLDER -scom -sreg -sfrag -gg -srd -out corde-files.wxs
         
-        # 2. Write master configuration files
         $WxsContent = @"
         <?xml version="1.0" encoding="UTF-8"?>
         <Wix xmlns="http://microsoft.com">
@@ -78,7 +119,7 @@ jobs:
             <Fragment>
                 <DirectoryRef Id="ApplicationProgramsFolder">
                     <Component Id="ApplicationShortcut" Guid="{E1DE0000-B1B2-4C3D-8EBF-F1E2D3C4B5A6}">
-                        <Shortcut Id="ApplicationStartMenuShortcut" Name="Corde IDE" Description="Launch Corde IDE" Target="[INSTALLFOLDER]\Code.exe" WorkingDirectory="INSTALLFOLDER"/>
+                        <Shortcut Id="ApplicationStartMenuShortcut" Name="Corde IDE" Description="Launch Corde IDE" Target="[INSTALLFOLDER]\$ExeName" WorkingDirectory="INSTALLFOLDER"/>
                         <RemoveFolder Id="CleanUpShortCut" On="uninstall"/>
                         <RegistryValue Root="HKCU" Key="Software\CordeIDE" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
                     </Component>
@@ -88,11 +129,10 @@ jobs:
         "@
         Set-Content -Path "corde-main.wxs" -Value $WxsContent -Encoding UTF8
         
-        # 3. Assemble installer artifact
         candle corde-main.wxs corde-files.wxs
         light -ext WixUIExtension corde-main.wixobj corde-files.wixobj -out Corde_IDE_x64.msi -sval
 
-    - name: Upload Completed MSI Package to GitHub Releases
+    - name: Upload Completed MSI Package to Actions Workspace Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: Corde-IDE-Windows-Installer
