@@ -19,19 +19,18 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: 22
-        cache: 'npm'
+
+    - name: Install Yarn globally
+      run: npm install -g yarn
 
     - name: Install WiX Toolset via Dotnet CLI
       run: |
-        # Install the global WiX Toolset deployment engine via native Dotnet SDK
         dotnet tool install --global wix --version 4.0.1
-        
-        # Inject standard global dotnet tools directory pathways into active runner environments
         echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
 
     - name: Set Up Branded Identity and Patches
       run: |
-        # 1. Update product.json properties securely with dynamic object property initialization
+        # 1. Update product.json properties securely
         $prod = Get-Content "product.json" -Raw | ConvertFrom-Json
         
         function Set-Property ($obj, $name, $value) {
@@ -72,19 +71,19 @@ jobs:
             }
         }
 
-    - name: Install Project Dependencies
+    - name: Install Project Dependencies (via Yarn)
       env:
         UV_THREADPOOL_SIZE: 64
         NODE_OPTIONS: --max-old-space-size=8192 --experimental-strip-types
         VSCODE_SKIP_NODE_VERSION_CHECK: 1
-      run: npm i --legacy-peer-deps
+      run: yarn install --frozen-lockfile
 
     - name: Compile Corde IDE Binaries
       env:
         UV_THREADPOOL_SIZE: 64
         NODE_OPTIONS: --max-old-space-size=8192 --experimental-strip-types
         VSCODE_SKIP_NODE_VERSION_CHECK: 1
-      run: npm run gulp -- vscode-win32-x64-min
+      run: yarn gulp vscode-win32-x64-min
 
     - name: Generate Layout Manifest & Build MSI Installer
       run: |
@@ -97,10 +96,11 @@ jobs:
             if ($foundExe) { $ExeName = $foundExe.Name }
         }
 
-        # Build the final installation MSI package utilizando the modern native `wix` command tree
-        # 1. Initialize modern XML layouts
+        # Initialize modern WiX 4 syntax structures
+        wix extension add WixToolset.UI.wixext
+
         $WxsContent = @"
-        <Wix xmlns="http://wixtoolset.org">
+        <Wix xmlns="http://wixtoolset.org" xmlns:ui="http://wixtoolset.org/ui">
             <Package Name="Corde IDE" Language="1033" Version="1.0.0" Manufacturer="Corde" UpgradeCode="D01D01DE-A1B2-4C3D-8EBF-F1E2D3C4B5A6" Scope="perMachine">
                 <MajorUpgrade DowngradeErrorMessage="A newer version of Corde IDE is already installed." />
                 <MediaTemplate EmbedCab="yes" />
@@ -123,15 +123,16 @@ jobs:
                     <ComponentRef Id="ApplicationShortcut" />
                     <Files Include="$SourceBinaries\**" />
                 </Feature>
+                
+                <ui:WixUI Id="WixUI_Minimal" />
             </Package>
         </Wix>
         "@
         Set-Content -Path "corde-main.wxs" -Value $WxsContent -Encoding UTF8
         
-        # 2. Compile and link straight to the binary layout folder via WiX 4 syntax mapping
         wix build corde-main.wxs -out Corde_IDE_x64.msi
 
-    - name: Upload Completed MSI Package to Actions Workspace Artifacts
+    - name: Upload Completed MSI Package
       uses: actions/upload-artifact@v4
       with:
         name: Corde-IDE-Windows-Installer
