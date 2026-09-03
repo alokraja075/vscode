@@ -21,36 +21,41 @@ jobs:
         node-version: 22
         cache: 'npm'
 
-    - name: Configure Turbo Compilation Env Settings
-      run: |
-        echo "UV_THREADPOOL_SIZE=64" >> $env:GITHUB_ENV
-        echo "NODE_OPTIONS=--max-old-space-size=8192 --experimental-strip-types" >> $env:GITHUB_ENV
-        echo "VSCODE_SKIP_NODE_VERSION_CHECK=1" >> $env:GITHUB_ENV
-
     - name: Set Up Branded Identity and Patches
       run: |
-        # 1. Update product.json properties securely
+        # 1. Update product.json properties securely with dynamic object property initialization
         $prod = Get-Content "product.json" -Raw | ConvertFrom-Json
-        $prod.nameShort = "CordeIDE"
-        $prod.nameLong = "Corde IDE"
-        $prod.applicationName = "corde-ide"
-        $prod.dataFolderName = ".corde-ide"
-        $prod.win32MutexName = "cordeide"
-        $prod.win32RegValueName = "CordeIDE"
-        $prod.win32AppId = "{C00DE1DE-E5F6-7A8B-9C0D-1E2F3A4B5C6D}"
-        $prod.win32AppUserModelId = "Corde.IDE"
-        $prod.win32DirName = "Corde IDE"
-        $prod.quality = "stable"
+        
+        # Safe Property Allocation helper function
+        function Set-Property ($obj, $name, $value) {
+            if ($null -eq $obj.$name) {
+                $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value -Force
+            } else {
+                $obj.$name = $value
+            }
+        }
+
+        Set-Property $prod "nameShort" "CordeIDE"
+        Set-Property $prod "nameLong" "Corde IDE"
+        Set-Property $prod "applicationName" "corde-ide"
+        Set-Property $prod "dataFolderName" ".corde-ide"
+        Set-Property $prod "win32MutexName" "cordeide"
+        Set-Property $prod "win32RegValueName" "CordeIDE"
+        Set-Property $prod "win32AppId" "{C00DE1DE-E5F6-7A8B-9C0D-1E2F3A4B5C6D}"
+        Set-Property $prod "win32AppUserModelId" "Corde.IDE"
+        Set-Property $prod "win32DirName" "Corde IDE"
+        Set-Property $prod "quality" "stable"
         
         $galleryObj = [PSCustomObject]@{
             serviceUrl = "https://visualstudio.com"
             cacheUrl   = "https://windows.net"
             itemUrl    = "https://visualstudio.com"
         }
-        $prod.extensionsGallery = $galleryObj
+        Set-Property $prod "extensionsGallery" $galleryObj
+
         $prod | ConvertTo-Json -Depth 100 | Set-Content "product.json" -Encoding UTF8
 
-        # 2. Patch Node v22 execution configurations
+        # 2. Patch Node v22 execution configurations inline
         $extFile = "build/lib/extensions.ts"
         if (Test-Path $extFile) {
             $extContent = Get-Content -Path $extFile -Raw
@@ -60,13 +65,12 @@ jobs:
             }
         }
 
-    - name: Inline WiX Toolset Provisioning (FIXED)
+    - name: Inline WiX Toolset Provisioning
       run: |
         $WixBinDir = "$pwd\.wix\bin"
         if (-not (Test-Path "$WixBinDir\candle.exe")) {
           New-Item -ItemType Directory -Force -Path "$WixBinDir" | Out-Null
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          # Fixed complete absolute link destination mapping
           curl.exe -L -o "$pwd\.wix\wix311.zip" "https://github.com"
           Expand-Archive -Path "$pwd\.wix\wix311.zip" -DestinationPath "$WixBinDir" -Force
           Remove-Item "$pwd\.wix\wix311.zip" -Force
@@ -74,9 +78,17 @@ jobs:
         echo "$WixBinDir" >> $env:GITHUB_PATH
 
     - name: Install Project Dependencies
+      env:
+        UV_THREADPOOL_SIZE: 64
+        NODE_OPTIONS: --max-old-space-size=8192 --experimental-strip-types
+        VSCODE_SKIP_NODE_VERSION_CHECK: 1
       run: npm i --legacy-peer-deps
 
     - name: Compile Corde IDE Binaries
+      env:
+        UV_THREADPOOL_SIZE: 64
+        NODE_OPTIONS: --max-old-space-size=8192 --experimental-strip-types
+        VSCODE_SKIP_NODE_VERSION_CHECK: 1
       run: npm run gulp -- vscode-win32-x64-min
 
     - name: Generate Layout Manifest & Build MSI Installer
@@ -84,14 +96,12 @@ jobs:
         $SourceBinaries = Join-Path (Get-Item .).Parent.FullName "VSCode-win32-x64"
         if (-not (Test-Path $SourceBinaries)) { throw "Compilation payload folder missing at $SourceBinaries" }
         
-        # Determine active executable targets dynamically
         $ExeName = "Code.exe"
         if (-not (Test-Path "$SourceBinaries\Code.exe")) {
             $foundExe = Get-ChildItem -Path $SourceBinaries -Filter "*.exe" | Where-Object { $_.Name -notmatch "inno" } | Select-Object -First 1
             if ($foundExe) { $ExeName = $foundExe.Name }
         }
 
-        # Harvest and compile 
         heat dir "$SourceBinaries" -cg CordeFiles -dr INSTALLFOLDER -scom -sreg -sfrag -gg -srd -out corde-files.wxs
         
         $WxsContent = @"
