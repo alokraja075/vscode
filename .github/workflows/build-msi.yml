@@ -21,6 +21,11 @@ jobs:
         node-version: 22
         cache: 'npm'
 
+    - name: Install WiX Toolset Compiler Engine
+      uses: ActiveChooChoo/setup-wix@v1
+      with:
+        wix-version: '3.11.2'
+
     - name: Set Up Branded Identity and Patches
       run: |
         # 1. Update product.json properties securely with dynamic object property initialization
@@ -64,14 +69,6 @@ jobs:
             }
         }
 
-    - name: Install WiX Toolset via Chocolatey
-      run: |
-        # Use pre-installed choco to download and place clean verified WiX v3 binaries natively
-        choco install wix --version=3.11.2 -y --no-progress
-        
-        # Inject standard Chocolatey tool pathways into active session path variables
-        echo "C:\Program Files (x86)\WiX Toolset v3.11\bin" >> $env:GITHUB_PATH
-
     - name: Install Project Dependencies
       env:
         UV_THREADPOOL_SIZE: 64
@@ -97,10 +94,8 @@ jobs:
             if ($foundExe) { $ExeName = $foundExe.Name }
         }
 
-        # Explicit absolute path mapping for the choco-installed WiX engine binaries
-        $WixPath = "C:\Program Files (x86)\WiX Toolset v3.11\bin"
-        
-        & "$WixPath\heat.exe" dir "$SourceBinaries" -cg CordeFiles -dr INSTALLFOLDER -scom -sreg -sfrag -gg -srd -out corde-files.wxs
+        # Dynamically harvest and compile via system runner PATH hooks
+        heat dir "$SourceBinaries" -cg CordeFiles -dr INSTALLFOLDER -scom -sreg -sfrag -gg -srd -out corde-files.wxs
         
         $WxsContent = @"
         <?xml version="1.0" encoding="UTF-8"?>
@@ -137,8 +132,8 @@ jobs:
         "@
         Set-Content -Path "corde-main.wxs" -Value $WxsContent -Encoding UTF8
         
-        & "$WixPath\candle.exe" corde-main.wxs corde-files.wxs
-        & "$WixPath\light.exe" -ext WixUIExtension corde-main.wixobj corde-files.wixobj -out Corde_IDE_x64.msi -sval
+        candle corde-main.wxs corde-files.wxs
+        light -ext WixUIExtension corde-main.wixobj corde-files.wixobj -out Corde_IDE_x64.msi -sval
 
     - name: Upload Completed MSI Package to Actions Workspace Artifacts
       uses: actions/upload-artifact@v4
