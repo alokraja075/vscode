@@ -1,0 +1,99 @@
+name: Build Corde IDE MSI
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: # Allows you to trigger the build manually anytime
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code Source
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1 # Instant shallow clone
+
+    - name: Setup Node.js (v22)
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: 'npm' # Automatically activates lightning-fast cloud caching
+
+    - name: Configure Turbo Compilation Speeds
+      run: |
+        echo "UV_THREADPOOL_SIZE=64" >> $env:GITHUB_ENV
+        echo "NODE_OPTIONS=--max-old-space-size=8192 --experimental-strip-types" >> $env:GITHUB_ENV
+        echo "VSCODE_SKIP_NODE_VERSION_CHECK=1" >> $env:GITHUB_ENV
+
+    - name: Inline WiX Toolset Provisioning
+      run: |
+        $WixBinDir = "$pwd\.wix\bin"
+        if (-not (Test-Path "$WixBinDir\candle.exe")) {
+          New-Item -ItemType Directory -Force -Path "$WixBinDir" | Out-Null
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          curl.exe -L -o "$pwd\.wix\wix311.zip" "https://github.com"
+          Expand-Archive -Path "$pwd\.wix\wix311.zip" -DestinationPath "$WixBinDir" -Force
+          Remove-Item "$pwd\.wix\wix311.zip" -Force
+        }
+        echo "$WixBinDir" >> $env:GITHUB_PATH
+
+    - name: Install Project Dependencies
+      run: npm i --legacy-peer-deps
+
+    - name: Compile Corde IDE Binaries
+      run: npm run gulp -- vscode-win32-x64-min
+
+    - name: Generate Layout Manifest & Build MSI Installer
+      run: |
+        $SourceBinaries = Join-Path (Get-Item .).Parent.FullName "VSCode-win32-x64"
+        
+        # 1. Harvest file layout maps
+        heat dir "$SourceBinaries" -cg CordeFiles -dr INSTALLFOLDER -scom -sreg -sfrag -gg -srd -out corde-files.wxs
+        
+        # 2. Write master configuration files
+        $WxsContent = @"
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Wix xmlns="http://microsoft.com">
+            <Product Id="*" Name="Corde IDE" Language="1033" Version="1.0.0" Manufacturer="Corde" UpgradeCode="{D01D01DE-A1B2-4C3D-8EBF-F1E2D3C4B5A6}">
+                <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+                <MajorUpgrade DowngradeErrorMessage="A newer version of Corde IDE is already installed." />
+                <MediaTemplate EmbedCab="yes" />
+                <Feature Id="ProductFeature" Title="Corde IDE" Level="1">
+                    <ComponentGroupRef Id="CordeFiles" />
+                    <ComponentRef Id="ApplicationShortcut" />
+                </Feature>
+            </Product>
+            <Fragment>
+                <Directory Id="TARGETDIR" Name="SourceDir">
+                    <Directory Id="ProgramFiles64Folder">
+                        <Directory Id="INSTALLFOLDER" Name="Corde IDE" />
+                    </Directory>
+                    <Directory Id="ProgramMenuFolder">
+                        <Directory Id="ApplicationProgramsFolder" Name="Corde IDE"/>
+                    </Directory>
+                </Directory>
+            </Fragment>
+            <Fragment>
+                <DirectoryRef Id="ApplicationProgramsFolder">
+                    <Component Id="ApplicationShortcut" Guid="{E1DE0000-B1B2-4C3D-8EBF-F1E2D3C4B5A6}">
+                        <Shortcut Id="ApplicationStartMenuShortcut" Name="Corde IDE" Description="Launch Corde IDE" Target="[INSTALLFOLDER]\Code.exe" WorkingDirectory="INSTALLFOLDER"/>
+                        <RemoveFolder Id="CleanUpShortCut" On="uninstall"/>
+                        <RegistryValue Root="HKCU" Key="Software\CordeIDE" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+                    </Component>
+                </DirectoryRef>
+            </Fragment>
+        </Wix>
+        "@
+        Set-Content -Path "corde-main.wxs" -Value $WxsContent -Encoding UTF8
+        
+        # 3. Assemble installer artifact
+        candle corde-main.wxs corde-files.wxs
+        light -ext WixUIExtension corde-main.wixobj corde-files.wixobj -out Corde_IDE_x64.msi -sval
+
+    - name: Upload Completed MSI Package to GitHub Releases
+      uses: actions/upload-artifact@v4
+      with:
+        name: Corde-IDE-Windows-Installer
+        path: Corde_IDE_x64.msi
