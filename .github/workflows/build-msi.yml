@@ -21,10 +21,13 @@ jobs:
         node-version: 22
         cache: 'npm'
 
-    - name: Install WiX Toolset Compiler Engine
-      uses: ActiveChooChoo/setup-wix@v1
-      with:
-        wix-version: '3.11.2'
+    - name: Install WiX Toolset via Dotnet CLI
+      run: |
+        # Install the global WiX Toolset deployment engine via native Dotnet SDK
+        dotnet tool install --global wix --version 4.0.1
+        
+        # Inject standard global dotnet tools directory pathways into active runner environments
+        echo "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
 
     - name: Set Up Branded Identity and Patches
       run: |
@@ -94,46 +97,39 @@ jobs:
             if ($foundExe) { $ExeName = $foundExe.Name }
         }
 
-        # Dynamically harvest and compile via system runner PATH hooks
-        heat dir "$SourceBinaries" -cg CordeFiles -dr INSTALLFOLDER -scom -sreg -sfrag -gg -srd -out corde-files.wxs
-        
+        # Build the final installation MSI package utilizando the modern native `wix` command tree
+        # 1. Initialize modern XML layouts
         $WxsContent = @"
-        <?xml version="1.0" encoding="UTF-8"?>
-        <Wix xmlns="http://microsoft.com">
-            <Product Id="*" Name="Corde IDE" Language="1033" Version="1.0.0" Manufacturer="Corde" UpgradeCode="{D01D01DE-A1B2-4C3D-8EBF-F1E2D3C4B5A6}">
-                <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
+        <Wix xmlns="http://wixtoolset.org">
+            <Package Name="Corde IDE" Language="1033" Version="1.0.0" Manufacturer="Corde" UpgradeCode="D01D01DE-A1B2-4C3D-8EBF-F1E2D3C4B5A6" Scope="perMachine">
                 <MajorUpgrade DowngradeErrorMessage="A newer version of Corde IDE is already installed." />
                 <MediaTemplate EmbedCab="yes" />
-                <Feature Id="ProductFeature" Title="Corde IDE" Level="1">
-                    <ComponentGroupRef Id="CordeFiles" />
+
+                <StandardDirectory Id="ProgramFiles64Folder">
+                    <Directory Id="INSTALLFOLDER" Name="Corde IDE" />
+                </StandardDirectory>
+
+                <StandardDirectory Id="ProgramMenuFolder">
+                    <Directory Id="ApplicationProgramsFolder" Name="Corde IDE"/>
+                </StandardDirectory>
+
+                <Component Id="ApplicationShortcut" Guid="E1DE0000-B1B2-4C3D-8EBF-F1E2D3C4B5A6" Directory="ApplicationProgramsFolder">
+                    <Shortcut Id="ApplicationStartMenuShortcut" Name="Corde IDE" Description="Launch Corde IDE" Target="[INSTALLFOLDER]\$ExeName" WorkingDirectory="INSTALLFOLDER"/>
+                    <RemoveFolder Id="CleanUpShortCut" On="uninstall"/>
+                    <RegistryValue Root="HKCU" Key="Software\CordeIDE" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+                </Component>
+
+                <Feature Id="Main">
                     <ComponentRef Id="ApplicationShortcut" />
+                    <Files Include="$SourceBinaries\**" />
                 </Feature>
-            </Product>
-            <Fragment>
-                <Directory Id="TARGETDIR" Name="SourceDir">
-                    <Directory Id="ProgramFiles64Folder">
-                        <Directory Id="INSTALLFOLDER" Name="Corde IDE" />
-                    </Directory>
-                    <Directory Id="ProgramMenuFolder">
-                        <Directory Id="ApplicationProgramsFolder" Name="Corde IDE"/>
-                    </Directory>
-                </Directory>
-            </Fragment>
-            <Fragment>
-                <DirectoryRef Id="ApplicationProgramsFolder">
-                    <Component Id="ApplicationShortcut" Guid="{E1DE0000-B1B2-4C3D-8EBF-F1E2D3C4B5A6}">
-                        <Shortcut Id="ApplicationStartMenuShortcut" Name="Corde IDE" Description="Launch Corde IDE" Target="[INSTALLFOLDER]\$ExeName" WorkingDirectory="INSTALLFOLDER"/>
-                        <RemoveFolder Id="CleanUpShortCut" On="uninstall"/>
-                        <RegistryValue Root="HKCU" Key="Software\CordeIDE" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
-                    </Component>
-                </DirectoryRef>
-            </Fragment>
+            </Package>
         </Wix>
         "@
         Set-Content -Path "corde-main.wxs" -Value $WxsContent -Encoding UTF8
         
-        candle corde-main.wxs corde-files.wxs
-        light -ext WixUIExtension corde-main.wixobj corde-files.wixobj -out Corde_IDE_x64.msi -sval
+        # 2. Compile and link straight to the binary layout folder via WiX 4 syntax mapping
+        wix build corde-main.wxs -out Corde_IDE_x64.msi
 
     - name: Upload Completed MSI Package to Actions Workspace Artifacts
       uses: actions/upload-artifact@v4
